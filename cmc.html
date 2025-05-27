@@ -1,0 +1,589 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-TF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>サイバーミサイルコマンド</title>
+    <style>
+        body {
+            margin: 0;
+            background-color: #000010; /* 深い紺色 */
+            color: #00ffcc; /* サイバーなテキストカラー */
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            font-family: 'Consolas', 'Monaco', monospace; /* サイバー風フォント */
+            overflow: hidden; /* スクロールバーを隠す */
+        }
+        canvas {
+            display: block;
+            background-color: #000000; /* キャンバス背景は黒 */
+            max-width: 100%;
+            max-height: 100vh;
+            aspect-ratio: 4 / 3; /* 4:3 のアスペクト比を維持 */
+            cursor: crosshair; /* マウスカーソルを照準っぽく */
+        }
+        #controls, #stats {
+            margin-top: 10px;
+            padding: 10px;
+            background-color: rgba(0, 20, 30, 0.8);
+            border: 1px solid #00ffcc;
+            border-radius: 8px;
+            box-shadow: 0 0 10px #00ffcc;
+            text-align: center;
+        }
+        #stats {
+            display: flex;
+            justify-content: space-around;
+            width: 80%;
+            max-width: 600px;
+        }
+        #stats p {
+            margin: 5px;
+            font-size: 1.2em;
+        }
+        button {
+            background-color: #00ffcc;
+            color: #000010;
+            border: none;
+            padding: 10px 20px;
+            font-size: 1em;
+            font-family: 'Consolas', 'Monaco', monospace;
+            cursor: pointer;
+            border-radius: 5px;
+            box-shadow: 0 0 10px #00ffcc, 0 0 5px #ffffff inset;
+            transition: background-color 0.3s, box-shadow 0.3s;
+        }
+        button:hover {
+            background-color: #ffffff;
+            box-shadow: 0 0 15px #00ffcc, 0 0 10px #ffffff inset;
+        }
+        #message-box {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background-color: rgba(0, 30, 40, 0.95);
+            color: #00ffcc;
+            padding: 30px;
+            border: 2px solid #00ffcc;
+            border-radius: 10px;
+            box-shadow: 0 0 20px #00ffcc;
+            text-align: center;
+            z-index: 1000;
+            font-size: 1.5em;
+            display: none; /* 初期状態では非表示 */
+        }
+        #message-box button {
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div id="stats">
+        <p>スコア: <span id="score">0</span></p>
+        <p>都市: <span id="cities-left">0</span></p>
+        <p>レベル: <span id="level">1</span></p>
+    </div>
+    <canvas id="gameCanvas"></canvas>
+    <div id="controls">
+        <p>操作: マウスで照準、クリックで発射</p>
+    </div>
+
+    <div id="message-box">
+        <p id="message-text"></p>
+        <button id="restart-button">リスタート</button>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+
+        const scoreEl = document.getElementById('score');
+        const citiesLeftEl = document.getElementById('cities-left');
+        const levelEl = document.getElementById('level');
+        const messageBox = document.getElementById('message-box');
+        const messageText = document.getElementById('message-text');
+        const restartButton = document.getElementById('restart-button');
+
+        let canvasWidth, canvasHeight;
+
+        // --- ゲーム設定 ---
+        const PLAYER_FIRE_COOLDOWN = 300; 
+        let lastFireTime = 0;
+        const NUM_CITIES = 4;
+        const CITY_COLORS = ["#00c0f0", "#00b0e0", "#00a0d0", "#0090c0"]; 
+        const ENEMY_MISSILE_COLORS = ["#ff6600", "#ff8800", "#ffaa00", "#ffcc33", "#ff4400"]; 
+
+        const PLAYER_EXPLOSION_RADIUS_FACTOR = 0.11;
+        const CHAIN_REACTION_BLAST_RADIUS_FACTOR = 0.08; 
+        const CITY_HIT_EXPLOSION_RADIUS_FACTOR = 0.06;
+        const GROUND_HIT_EXPLOSION_RADIUS_FACTOR = 0.04;
+
+        const MAX_PLAYER_AMMO = 15; 
+        let playerAmmo = MAX_PLAYER_AMMO; 
+
+
+        let cities = [];
+        let playerMissiles = [];
+        let enemyMissiles = [];
+        let explosions = [];
+        let crosshair = { x: 0, y: 0, color: '#00ff00' };
+        let score = 0;
+        let level = 1;
+        let gameOver = false;
+        let gameRunning = false;
+
+        let missileSpeedMultiplier;
+        let baseMissileSpawnInterval;
+        let missilesPerWave;
+        let maxEnemyMissilesOnScreen;
+        let enemySpawnTimer;
+        let nextCityRestoreScore = 1500; 
+
+        const FRAMES_PER_SECOND = 60; 
+        let levelUpMessageActive = false; 
+        let levelUpMessageTimer = 0;    
+
+        // --- エンティティクラス ---
+        class City {
+            constructor(x, y, width, height, color) {
+                this.x = x; this.y = y; this.width = width; this.height = height;
+                this.color = color; this.alive = true;
+            }
+            draw(ctx) {
+                if (this.alive) {
+                    ctx.fillStyle = this.color;
+                    ctx.fillRect(this.x, this.y, this.width, this.height);
+                    ctx.strokeStyle = '#ccffff'; ctx.lineWidth = 0.8; 
+                    ctx.strokeRect(this.x - 0.5, this.y - 0.5, this.width + 1, this.height + 1);
+                }
+            }
+        }
+
+        class Missile {
+            constructor(startX, startY, targetX, targetY, speed, color, isPlayerMissile = false) {
+                this.x = startX; this.y = startY;
+                this.targetX = targetX; this.targetY = targetY;
+                this.speed = speed; this.color = color; 
+                this.isPlayerMissile = isPlayerMissile;
+                this.trail = []; this.trailLength = 15;
+                const angle = Math.atan2(targetY - startY, targetX - startX);
+                this.dx = Math.cos(angle) * speed; this.dy = Math.sin(angle) * speed;
+                this.active = true;
+            }
+            update() {
+                if (!this.active) return;
+                this.trail.push({ x: this.x, y: this.y });
+                if (this.trail.length > this.trailLength) this.trail.shift();
+                this.x += this.dx; this.y += this.dy;
+
+                if (this.isPlayerMissile) {
+                    if ((this.dx > 0 && this.x >= this.targetX) || (this.dx < 0 && this.x <= this.targetX) ||
+                        (this.dy > 0 && this.y >= this.targetY) || (this.dy < 0 && this.y <= this.targetY)) {
+                        this.explodePlayer();
+                    }
+                } else { // Enemy missile
+                    if (this.y >= this.targetY) {
+                        this.active = false; 
+                        let cityDestroyedThisHit = false;
+                        cities.forEach(city => {
+                            if (city.alive &&
+                                this.targetX >= city.x && this.targetX < city.x + city.width &&
+                                this.targetY >= city.y && this.targetY < city.y + city.height) {
+                                if (Math.hypot(this.x - this.targetX, this.y - this.targetY) < this.speed * 2.5) { 
+                                     city.alive = false; 
+                                     explosions.push(new Explosion(this.x, this.y, canvasWidth * CITY_HIT_EXPLOSION_RADIUS_FACTOR, '#ff8800', false));
+                                     cityDestroyedThisHit = true;
+                                }
+                            }
+                        });
+                        if (!cityDestroyedThisHit) {
+                            explosions.push(new Explosion(this.x, this.y, canvasWidth * GROUND_HIT_EXPLOSION_RADIUS_FACTOR, '#ffcc00', false));
+                        }
+                    }
+                }
+            }
+            explodePlayer() { 
+                this.active = false;
+                const explosionSize = canvasWidth * PLAYER_EXPLOSION_RADIUS_FACTOR; 
+                const explosionColor = '#00ffff'; 
+                explosions.push(new Explosion(this.targetX, this.targetY, explosionSize, explosionColor, true));
+            }
+            draw(ctx) {
+                if (!this.active) return;
+                ctx.globalCompositeOperation = 'lighter';
+                for (let i = 0; i < this.trail.length; i++) {
+                    const p = this.trail[i]; const alpha = (i / this.trail.length) * 0.4;
+                    ctx.beginPath(); ctx.arc(p.x, p.y, (i / this.trail.length) * 2.5, 0, Math.PI * 2);
+                    let r, g, b;
+                    if (this.color.startsWith('#')) {
+                        const hex = this.color.substring(1); const bigint = parseInt(hex, 16);
+                        r = (bigint >> 16) & 255; g = (bigint >> 8) & 255; b = bigint & 255;
+                    } else { r = 0; g = 255; b = 255; }
+                    ctx.fillStyle = `rgba(${r},${g},${b},${alpha})`; ctx.fill();
+                }
+                ctx.globalCompositeOperation = 'source-over';
+                ctx.fillStyle = this.color; ctx.beginPath();
+                ctx.arc(this.x, this.y, 2.5, 0, Math.PI * 2); ctx.fill();
+                ctx.globalCompositeOperation = 'lighter';
+                ctx.strokeStyle = this.color; ctx.lineWidth = 1.0;
+                ctx.beginPath(); ctx.moveTo(this.x, this.y);
+                ctx.lineTo(this.x - this.dx * 2, this.y - this.dy * 2); ctx.stroke();
+                ctx.globalCompositeOperation = 'source-over';
+            }
+        }
+
+        class Explosion {
+            constructor(x, y, maxRadius, color, isPlayerExplosion) {
+                this.x = x; this.y = y; this.maxRadius = maxRadius; this.color = color;
+                this.isPlayerExplosion = isPlayerExplosion;
+                this.radius = 0; 
+                this.particles = []; this.active = true;
+
+                this.expandDuration = FRAMES_PER_SECOND * 1.2; // 1.2秒で拡大
+                this.sustainDuration = FRAMES_PER_SECOND * 1.5; // 1.5秒維持
+                this.shrinkDuration = FRAMES_PER_SECOND * 1.2; // 1.2秒で縮小
+                this.totalDuration = this.expandDuration + this.sustainDuration + this.shrinkDuration;
+                this.life = this.totalDuration;
+
+                const numParticles = 25 + Math.random() * 15; 
+                for (let i = 0; i < numParticles; i++) {
+                    const angle = Math.random() * Math.PI * 2;
+                    const speed = 0.5 + Math.random() * (isPlayerExplosion || this.color === '#00ffff' ? 2.5 : 2.0); 
+                    this.particles.push({
+                        x: this.x, y: this.y, vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed,
+                        life: this.sustainDuration + Math.random() * (this.expandDuration + this.shrinkDuration), 
+                        initialSize: 1 + Math.random() * 2,
+                        color: isPlayerExplosion || this.color === '#00ffff' ? `rgba(0, ${180+Math.random()*75}, ${200+Math.random()*55},0.9)` : `rgba(255,${100+Math.random()*80},0,0.9)`
+                    });
+                }
+            }
+
+            update() {
+                if (!this.active) return;
+                this.life--;
+                if (this.life <= 0) { this.active = false; return; }
+
+                const elapsedTime = this.totalDuration - this.life;
+
+                if (elapsedTime < this.expandDuration) {
+                    this.radius = this.maxRadius * (elapsedTime / this.expandDuration);
+                } else if (elapsedTime < this.expandDuration + this.sustainDuration) {
+                    this.radius = this.maxRadius;
+                } else {
+                    const shrinkElapsedTime = elapsedTime - (this.expandDuration + this.sustainDuration);
+                    this.radius = this.maxRadius * (1 - (shrinkElapsedTime / this.shrinkDuration));
+                }
+                this.radius = Math.max(0, this.radius); 
+
+                this.particles.forEach(p => { 
+                    p.x += p.vx; p.y += p.vy; p.vy += 0.02; 
+                    p.life--; 
+                });
+                this.particles = this.particles.filter(p => p.life > 0);
+
+                enemyMissiles.forEach(em => {
+                    if (em.active) {
+                        const dist = Math.hypot(em.x - this.x, em.y - this.y);
+                        if (dist < this.radius) { 
+                            em.active = false; 
+                            if (this.isPlayerExplosion) { score += 100; }
+                            const chainRadius = canvasWidth * CHAIN_REACTION_BLAST_RADIUS_FACTOR;
+                            const chainColor = ENEMY_MISSILE_COLORS[Math.floor(Math.random() * ENEMY_MISSILE_COLORS.length)];
+                            explosions.push(new Explosion(em.x, em.y, chainRadius, chainColor, false)); 
+                        }
+                    }
+                });
+            }
+            draw(ctx) {
+                if (!this.active) return;
+                ctx.globalCompositeOperation = 'lighter';
+                const gradient = ctx.createRadialGradient(this.x, this.y, 0, this.x, this.y, this.radius);
+                const baseColorHex = this.color.substring(0, 7); 
+                gradient.addColorStop(0, `${baseColorHex}ff`); 
+                gradient.addColorStop(0.3, `${baseColorHex}cc`);
+                gradient.addColorStop(0.7, `${baseColorHex}88`);
+                gradient.addColorStop(1, `${baseColorHex}00`);
+                ctx.fillStyle = gradient; ctx.beginPath();
+                ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2); ctx.fill();
+                
+                this.particles.forEach(p => {
+                    const particleAlpha = Math.max(0, p.life / (this.sustainDuration / 1.5)) * 0.75; 
+                    ctx.fillStyle = p.color.replace(/, [0-9\.]+\)/, `, ${particleAlpha})`);
+                    ctx.beginPath(); 
+                    ctx.arc(p.x, p.y, p.initialSize * (this.radius / this.maxRadius + 0.3), 0, Math.PI * 2); 
+                    ctx.fill();
+                });
+                ctx.globalCompositeOperation = 'source-over';
+            }
+        }
+
+        function setupCities() {
+            cities = [];
+            const cityWidth = canvasWidth * 0.1; const cityHeight = canvasHeight * 0.05;
+            const cityY = canvasHeight - cityHeight - (canvasHeight * 0.02);
+            const spacing = (canvasWidth - (NUM_CITIES * cityWidth)) / (NUM_CITIES + 1);
+            for (let i = 0; i < NUM_CITIES; i++) {
+                const cityX = spacing + i * (cityWidth + spacing);
+                cities.push(new City(cityX, cityY, cityWidth, cityHeight, CITY_COLORS[i % CITY_COLORS.length]));
+            }
+        }
+
+        function spawnEnemyWave() {
+            const numToSpawn = missilesPerWave;
+            const aliveCities = cities.filter(c => c.alive);
+            for (let i = 0; i < numToSpawn; i++) {
+                if (enemyMissiles.length >= maxEnemyMissilesOnScreen) break; 
+                const startX = Math.random() * canvasWidth;
+                const startY = 0 - Math.random() * canvasHeight * 0.1; 
+                let targetCity = null;
+                if (aliveCities.length > 0) targetCity = aliveCities[Math.floor(Math.random() * aliveCities.length)];
+                let targetX, targetY;
+                if (targetCity) {
+                    targetX = targetCity.x + targetCity.width / 2 + (Math.random() * targetCity.width - targetCity.width/2)*0.9; 
+                    targetY = targetCity.y; 
+                } else {
+                    targetX = Math.random() * canvasWidth; targetY = canvasHeight - (canvasHeight * 0.02); 
+                }
+                const speed = (0.8 + Math.random() * 0.4) * missileSpeedMultiplier * (canvasHeight / 400); 
+                const color = ENEMY_MISSILE_COLORS[Math.floor(Math.random() * ENEMY_MISSILE_COLORS.length)];
+                enemyMissiles.push(new Missile(startX, startY, targetX, targetY, speed, color, false));
+            }
+        }
+        
+        function updateEnemySpawning(deltaTime) {
+            enemySpawnTimer -= deltaTime;
+            if (enemySpawnTimer <= 0) {
+                spawnEnemyWave();
+                const intervalMultiplier = Math.max(0.20, 1 - (level -1) * 0.07); 
+                enemySpawnTimer = (baseMissileSpawnInterval / missileSpeedMultiplier) * (0.7 + Math.random() * 0.6) * intervalMultiplier;
+            }
+        }
+        
+        function applyLevelParameters() {
+            missileSpeedMultiplier = 1.0 + (level - 1) * 0.07; 
+            baseMissileSpawnInterval = Math.max(400, 2700 - (level - 1) * 180); 
+            missilesPerWave = Math.min(level + 1, 12); 
+            maxEnemyMissilesOnScreen = Math.min(40, 15 + Math.floor(level * 2.2)); 
+        }
+
+        function calculateScoreForNextLevel(currentLevel) {
+            let requiredScore = 0;
+            for(let i=1; i <= currentLevel; i++){ 
+                 requiredScore += i * 350 * (1 + (i-1) * 0.18); 
+            }
+            return requiredScore;
+        }
+
+        function resizeCanvas() {
+            const aspectRatio = 4 / 3;
+            const parentWidth = window.innerWidth * 0.9; const parentHeight = window.innerHeight * 0.7;
+            let newWidth = parentWidth; let newHeight = parentWidth / aspectRatio;
+            if (newHeight > parentHeight) { newHeight = parentHeight; newWidth = parentHeight * aspectRatio; }
+            canvas.width = newWidth; canvas.height = newHeight;
+            canvasWidth = canvas.width; canvasHeight = canvas.height;
+            if (gameRunning || gameOver) setupCities();
+        }
+
+        function update(deltaTime) {
+            if (gameOver) return;
+            updateEnemySpawning(deltaTime);
+            playerMissiles.forEach(pm => pm.update());
+            enemyMissiles.forEach(em => em.update());
+            explosions.forEach(ex => ex.update());
+
+            playerMissiles = playerMissiles.filter(pm => pm.active);
+            enemyMissiles = enemyMissiles.filter(em => em.active);
+            explosions = explosions.filter(ex => ex.active);
+
+            scoreEl.textContent = score;
+            const aliveCitiesCount = cities.filter(c => c.alive).length;
+            citiesLeftEl.textContent = aliveCitiesCount;
+            levelEl.textContent = level;
+
+            if (aliveCitiesCount === 0 && cities.length > 0) { 
+                gameOver = true; gameRunning = false;
+                messageText.textContent = `ゲームオーバー！ スコア: ${score}`;
+                messageBox.style.display = 'block';
+            }
+
+            // レベルアップ処理
+            if (score >= calculateScoreForNextLevel(level)) { 
+                level++;
+                applyLevelParameters(); 
+                playerAmmo = MAX_PLAYER_AMMO; 
+                levelUpMessageActive = true;
+                levelUpMessageTimer = FRAMES_PER_SECOND * 2; 
+            }
+            
+            // 都市回復ボーナス (1500点ごと)
+            if (score >= nextCityRestoreScore) {
+                const currentAliveCities = cities.filter(c => c.alive).length;
+                if (currentAliveCities < NUM_CITIES) { 
+                    const firstDeadCity = cities.find(c => !c.alive);
+                    if (firstDeadCity) {
+                        firstDeadCity.alive = true;
+                    }
+                }
+                nextCityRestoreScore += 1500; 
+            }
+
+
+            if (levelUpMessageActive) {
+                levelUpMessageTimer--;
+                if (levelUpMessageTimer <= 0) {
+                    levelUpMessageActive = false;
+                }
+            }
+        }
+
+        function drawGrid() {
+            ctx.globalCompositeOperation = 'lighter';
+            ctx.strokeStyle = 'rgba(0, 70, 70, 0.1)'; ctx.lineWidth = 0.3;
+            const gridSize = canvasWidth / 25;
+            for (let x = 0; x < canvasWidth; x += gridSize) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, canvasHeight); ctx.stroke(); }
+            for (let y = 0; y < canvasHeight; y += gridSize) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvasWidth, y); ctx.stroke(); }
+            ctx.globalCompositeOperation = 'source-over';
+        }
+
+        function drawPlayerBaseAndAmmo() { 
+            const baseX = canvasWidth / 2; const baseY = canvasHeight - (canvasHeight * 0.02);
+            const baseWidthAtBottom = canvasWidth * 0.06; const baseWidthAtTop = canvasWidth * 0.03;
+            const baseHeight = canvasHeight * 0.025;
+            ctx.fillStyle = '#00aaaa'; ctx.beginPath();
+            ctx.moveTo(baseX - baseWidthAtBottom / 2, baseY); ctx.lineTo(baseX + baseWidthAtBottom / 2, baseY);
+            ctx.lineTo(baseX + baseWidthAtTop / 2, baseY - baseHeight); ctx.lineTo(baseX - baseWidthAtTop / 2, baseY - baseHeight);
+            ctx.closePath(); ctx.fill();
+            const turretLength = canvasHeight * 0.035; const turretOriginY = baseY - baseHeight;
+            const angle = Math.atan2(crosshair.y - turretOriginY, crosshair.x - baseX);
+            ctx.strokeStyle = '#ddeeff'; ctx.lineWidth = 2.5;
+            ctx.beginPath(); ctx.moveTo(baseX, turretOriginY);
+            ctx.lineTo(baseX + Math.cos(angle) * turretLength, turretOriginY + Math.sin(angle) * turretLength); ctx.stroke();
+
+            ctx.fillStyle = '#00ffcc';
+            ctx.font = `${Math.max(12, canvasHeight * 0.025)}px 'Consolas', 'Monaco', monospace`;
+            ctx.textAlign = 'center';
+            ctx.fillText(`AMMO: ${playerAmmo}`, baseX, baseY - baseHeight - canvasHeight * 0.015);
+        }
+
+        function drawLevelUpMessage() {
+            if (levelUpMessageActive) {
+                const fontSize = Math.max(20, canvasHeight * 0.08); 
+                ctx.font = `bold ${fontSize}px 'Consolas', 'Monaco', monospace`;
+                const alpha = Math.max(0, levelUpMessageTimer / (FRAMES_PER_SECOND * 2)); 
+                ctx.fillStyle = `rgba(0, 255, 204, ${alpha})`;
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText('LEVEL UP!', canvasWidth / 2, canvasHeight / 2);
+            }
+        }
+
+
+        function draw() {
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.8)'; ctx.fillRect(0, 0, canvasWidth, canvasHeight);
+            drawGrid();
+            cities.forEach(city => city.draw(ctx));
+            drawPlayerBaseAndAmmo(); 
+            playerMissiles.forEach(pm => pm.draw(ctx));
+            enemyMissiles.forEach(em => em.draw(ctx));
+            explosions.forEach(ex => ex.draw(ctx));
+            
+            drawLevelUpMessage(); 
+
+            ctx.strokeStyle = crosshair.color; ctx.lineWidth = 0.8;
+            ctx.beginPath();
+            ctx.moveTo(crosshair.x - 8, crosshair.y); ctx.lineTo(crosshair.x + 8, crosshair.y);
+            ctx.moveTo(crosshair.x, crosshair.y - 8); ctx.lineTo(crosshair.x, crosshair.y + 8);
+            ctx.stroke();
+        }
+
+        let lastTime = 0;
+        function gameLoop(timestamp) {
+            if (!gameRunning && gameOver) { draw(); return; }
+            const deltaTime = timestamp - lastTime; lastTime = timestamp;
+            if(gameRunning) update(deltaTime);
+            draw(); 
+            if (!gameOver) requestAnimationFrame(gameLoop);
+        }
+
+        canvas.addEventListener('mousemove', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            crosshair.x = e.clientX - rect.left; crosshair.y = e.clientY - rect.top;
+        });
+
+        canvas.addEventListener('click', (e) => {
+            if (gameOver) return; 
+            if (!gameRunning) { 
+                return; 
+            }
+            const currentTime = performance.now();
+            if (currentTime - lastFireTime > PLAYER_FIRE_COOLDOWN) {
+                if (playerAmmo > 0) { 
+                    const turretBaseY = canvasHeight - (canvasHeight * 0.02); const turretHeight = canvasHeight * 0.025;
+                    const startX = canvasWidth / 2; const startY = turretBaseY - turretHeight; 
+                    const speed = canvasHeight / 100;
+                    playerMissiles.push(new Missile(startX, startY, crosshair.x, crosshair.y, speed, '#00ffff', true));
+                    playerAmmo--; 
+                }
+                lastFireTime = currentTime;
+            }
+        });
+        
+        restartButton.addEventListener('click', () => {
+            messageBox.style.display = 'none'; startGame();
+        });
+
+        function startGame() {
+            resizeCanvas(); 
+            setupCities();
+            playerMissiles = []; enemyMissiles = []; explosions = [];
+            score = 0; level = 1; 
+            playerAmmo = MAX_PLAYER_AMMO; 
+            levelUpMessageActive = false; levelUpMessageTimer = 0; 
+            nextCityRestoreScore = 1500; 
+            gameOver = false; gameRunning = true; lastFireTime = 0;
+            
+            applyLevelParameters(); 
+            enemySpawnTimer = baseMissileSpawnInterval * 0.5; 
+
+            citiesLeftEl.textContent = cities.filter(c => c.alive).length;
+            scoreEl.textContent = score; levelEl.textContent = level;
+            messageBox.style.display = 'none';
+            lastTime = performance.now();
+            if (!gameOver) requestAnimationFrame(gameLoop); 
+        }
+        
+        window.addEventListener('load', () => {
+            resizeCanvas(); 
+            messageText.textContent = "サイバーミサイルコマンドへようこそ！";
+            const startButton = document.createElement('button');
+            startButton.textContent = "ゲーム開始"; startButton.id = "initial-start-button"; 
+            const existingButton = messageBox.querySelector('button');
+            if(existingButton) existingButton.remove();
+            messageBox.appendChild(startButton);
+            startButton.onclick = () => {
+                startGame(); 
+                startButton.remove(); messageBox.appendChild(restartButton);
+                messageBox.style.display = 'none';
+            };
+            messageBox.style.display = 'block';
+            requestAnimationFrame(gameLoop); 
+        });
+
+        window.addEventListener('resize', () => {
+            const wasRunning = gameRunning; gameRunning = false; 
+            resizeCanvas();
+            if (cities.length > 0) setupCities();
+            draw(); 
+            if (wasRunning && !gameOver) gameRunning = true; 
+            else if (gameOver) {
+                messageText.textContent = `ゲームオーバー！ スコア: ${score}`;
+                messageBox.style.display = 'block';
+            }
+        });
+    </script>
+</body>
+</html>
