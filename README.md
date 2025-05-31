@@ -3,7 +3,7 @@
 
  [https://keigox68000.github.io/CyberMissileCommand/](https://keigox68000.github.io/CyberMissileCommand/)
 
-![screenshot](cmc.gif) 
+<img src="cmc.gif" alt="screenshot" width="300">
 
 ## これはなに？
 
