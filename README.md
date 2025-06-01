@@ -1,9 +1,8 @@
 # サイバーミサイルコマンド 🚀
-##   公開ページ
-
- [https://keigox68000.github.io/CyberMissileCommand/](https://keigox68000.github.io/CyberMissileCommand/)
-
 <img src="cmc.gif" alt="screenshot" width="300">
+
+##   公開ページ
+ [https://keigox68000.github.io/CyberMissileCommand/](https://keigox68000.github.io/CyberMissileCommand/)
 
 ## これはなに？
 
